@@ -16,12 +16,16 @@ from .serializers import (
     CodeImprovementSerializer
 )
 from .services import GitHubService, PRReviewService
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework.permissions import IsAuthenticated
 
 class RepositoryListAPIView(APIView):
     """
     GET /api/repositories/
     List user's repositories with pagination
     """
+    # authentication_classes = [JWTAuthentication]  # or your auth class
+    # permission_classes = [IsAuthenticated]
     
     def get(self, request):
         try:

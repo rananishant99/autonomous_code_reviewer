@@ -9,8 +9,8 @@ from datetime import datetime
 from .models import Repository, PullRequest, ReviewRequest, ReviewResult
 
 class GitHubService:
-    def __init__(self):
-        self.token = self.user.github_tokens.latest('created_at').token
+    def __init__(self, user):
+        self.token = user.github_tokens.latest('created_at').token
         self.headers = {
             "Authorization": f"token {self.token}",
             "Accept": "application/vnd.github.v3+json"
