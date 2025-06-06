@@ -10,7 +10,7 @@ from .models import Repository, PullRequest, ReviewRequest, ReviewResult
 
 class GitHubService:
     def __init__(self):
-        self.token = os.getenv("GITHUB_TOKEN")
+        self.token = self.user.github_tokens.latest('created_at').token
         self.headers = {
             "Authorization": f"token {self.token}",
             "Accept": "application/vnd.github.v3+json"

@@ -25,7 +25,7 @@ class RepositoryListAPIView(APIView):
     
     def get(self, request):
         try:
-            github_service = GitHubService()
+            github_service = GitHubService(request.user)
             page = int(request.query_params.get('page', 1))
             per_page = int(request.query_params.get('per_page', 20))
             
@@ -107,7 +107,7 @@ class PullRequestListAPIView(APIView):
     
     def get(self, request, owner, repo):
         try:
-            github_service = GitHubService()
+            github_service = GitHubService(request.user)
             page = int(request.query_params.get('page', 1))
             per_page = int(request.query_params.get('per_page', 20))
             state = request.query_params.get('state', 'open')
@@ -182,7 +182,7 @@ class PullRequestDetailAPIView(APIView):
     
     def get(self, request, owner, repo, pr_number):
         try:
-            github_service = GitHubService()
+            github_service = GitHubService(request.user)
             pr_data = github_service.get_pr_details(owner, repo, pr_number)
             
             return Response({

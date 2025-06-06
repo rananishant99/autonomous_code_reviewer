@@ -14,3 +14,8 @@ class Authentication:
         'EMAIL_EXISTS': "This email is already registered.",
         'NOT_FOUND': "User not found."
     }
+
+    GITHUB = {
+        "CREATED": "GitHub token saved successfully.",
+        "UPDATED": "GitHub token updated successfully."
+    }

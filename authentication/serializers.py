@@ -2,7 +2,7 @@ from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 from .constants import Authentication
-
+from .models import GitToken
 
 class UserSignupSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
@@ -38,3 +38,12 @@ class CustomRefreshTokenSerializer(serializers.Serializer):
     """Serializer to handle refresh token input for JWT refresh."""
 
     refresh_token = serializers.CharField(write_only=True)
+
+
+class GitTokenSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GitToken
+        fields = ['token']
+        extra_kwargs = {
+            'token': {'write_only': True}
+        }
