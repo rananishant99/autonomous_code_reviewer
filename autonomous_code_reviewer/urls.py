@@ -16,9 +16,27 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from django.http import JsonResponse
+
+def api_root(request):
+    """API root endpoint with available endpoints"""
+    return JsonResponse({
+        'message': 'Code Suggestion Chatbot API',
+        'version': '1.0',
+        'endpoints': {
+            'chat': '/api/chatbot/chat/',
+            'history': '/api/chatbot/history/<session_id>/',
+            'sessions': '/api/chatbot/sessions/',
+            'agents': '/api/chatbot/agents/',
+            'stats': '/api/chatbot/stats/',
+            'admin': '/admin/',
+        },
+        'documentation': 'Send POST requests to /api/chatbot/chat/ with {"message": "your code question"}'
+    })
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('auth/', include('authentication.urls')),
-    path('agent/', include('review.urls'))
+    path('agent/', include('review.urls')),
+    path('bot/', include('chatbot.urls')),
 ]

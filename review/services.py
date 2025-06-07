@@ -16,7 +16,7 @@ class ConfigService:
     def get_github_config() -> Dict[str, str]:
         """Get GitHub-related configuration"""
         return {
-            'token': os.getenv('GITHUB_TOKEN'),
+            # 'token': os.getenv('GITHUB_TOKEN'),
             'base_url': os.getenv('GITHUB_API_BASE_URL', 'https://api.github.com'),
             'timeout': int(os.getenv('API_TIMEOUT', '30')),
             'max_retries': int(os.getenv('API_MAX_RETRIES', '3')),
@@ -99,52 +99,94 @@ class PromptManager:
     def get_default_prompts(self) -> Dict:
         """Fallback prompts if YAML file is not available"""
         return {
+            'file_analysis': {
+                'system_prompt': """You are a senior software architect and code reviewer. Provide comprehensive analysis focusing on:
+
+    **CODE QUALITY ASSESSMENT:**
+    1. **Design Patterns & Architecture**: Identify anti-patterns, suggest better architectural approaches
+    2. **Performance Analysis**: Identify bottlenecks, memory issues, algorithmic complexity problems
+    3. **Security Review**: Find vulnerabilities, injection risks, authentication issues
+    4. **Maintainability**: Code readability, modularity, documentation needs
+    5. **Best Practices**: Language-specific conventions, error handling, testing gaps
+
+    **DETAILED FEEDBACK FORMAT:**
+    For each issue found:
+    - **Severity**: CRITICAL/HIGH/MEDIUM/LOW
+    - **Category**: Performance/Security/Maintainability/Style/Logic
+    - **Location**: Exact line numbers from the diff
+    - **Problem**: Clear description of the issue
+    - **Impact**: Why this matters (performance, security, maintenance)
+    - **Solution**: Specific code improvement with examples
+
+    Be specific, actionable, and focus on making the code production-ready.""",
+                
+                'user_prompt': """
+    **File**: {filename}
+    **Language**: {language}
+    **Changes**: +{additions} -{deletions} lines
+
+    **Old Code**:
+    {old_code}
+
+    **New Code**:
+    {new_code}
+
+    **Diff Analysis**:
+    {diff}
+
+    **Code Changes Summary**:
+    {changes_summary}
+
+    Please provide detailed analysis with specific code improvements.
+    """
+            },
             'code_improvements': {
                 'system_prompt': """You are an expert code reviewer. Analyze the provided code changes and give specific improvements.
 
-TASK: Provide code improvements in this EXACT format:
+    TASK: Provide code improvements in this EXACT format:
 
-## 🎯 ORIGINAL CODE vs IMPROVED CODE
+    ## 🎯 ORIGINAL CODE vs IMPROVED CODE
 
-### Issue 1: [Problem Description]
-**Severity**: HIGH/MEDIUM/LOW
-**Category**: Performance/Security/Quality/Style
+    ### Issue 1: [Problem Description]
+    **Severity**: HIGH/MEDIUM/LOW
+    **Category**: Performance/Security/Quality/Style
 
-**Original Code:**
-```[language]
-[show the actual problematic code]
-```
+    **Original Code:**
+    ```[language]
+    [show the actual problematic code]
+    ```
 
-**Improved Code:**
-```[language]
-[show the improved version]
-```
+    **Improved Code:**
+    ```[language]
+    [show the improved version]
+    ```
 
-**Why This Is Better:**
-- [Specific technical reason 1]
-- [Specific technical reason 2]
-- [Measurable benefit]
+    **Why This Is Better:**
+    - [Specific technical reason 1]
+    - [Specific technical reason 2]
+    - [Measurable benefit]
 
-REQUIREMENTS:
-- Always find at least 1-2 improvement opportunities
-- Be specific about what to change and why
-- Provide working code examples
-- Focus on practical, implementable suggestions""",
+    REQUIREMENTS:
+    - Always find at least 1-2 improvement opportunities
+    - Be specific about what to change and why
+    - Provide working code examples
+    - Focus on practical, implementable suggestions""",
+                
                 'user_prompt': """Please analyze this code change:
 
-File: {file_path}
-Language: {language}
+    File: {file_path}
+    Language: {language}
 
-Added Lines:
-{added_lines}
+    Added Lines:
+    {added_lines}
 
-Removed Lines:
-{removed_lines}
+    Removed Lines:
+    {removed_lines}
 
-Context:
-{context}
+    Context:
+    {context}
 
-Provide specific improvements with before/after examples."""
+    Provide specific improvements with before/after examples."""
             }
         }
     
@@ -308,6 +350,53 @@ class PRReviewService:
             print(f"🤖 AI Model configured: {openai_config['model']}")
             print(f"🌡️  Temperature: {openai_config['temperature']}")
             print(f"📏 Max tokens: {openai_config['max_tokens']}")
+
+    def parse_diff_changes_detailed(self, diff: str) -> tuple[str, str, str]:
+        """Parse diff to extract old code, new code, and changes summary separately"""
+        if not diff:
+            return "", "", "No diff available"
+        
+        lines = diff.split('\n')
+        old_code_lines = []
+        new_code_lines = []
+        changes = []
+        line_number = 1
+        
+        for line in lines:
+            if line.startswith('@@'):
+                # Extract line number from hunk header
+                try:
+                    import re
+                    match = re.search(r'@@\s*-(\d+)(?:,\d+)?\s*\+(\d+)(?:,\d+)?\s*@@', line)
+                    if match:
+                        old_line, new_line = match.groups()
+                        line_number = int(new_line)
+                        changes.append(f"   HUNK: {line}")
+                except:
+                    pass
+            elif line.startswith('-') and not line.startswith('---'):
+                # Removed line (old code)
+                old_code_lines.append(line[1:])  # Remove the '-' prefix
+                changes.append(f"❌ REMOVED (Line ~{line_number}): {line[1:]}")
+            elif line.startswith('+') and not line.startswith('+++'):
+                # Added line (new code)
+                new_code_lines.append(line[1:])  # Remove the '+' prefix
+                changes.append(f"✅ ADDED (Line {line_number}): {line[1:]}")
+                line_number += 1
+            elif line.startswith(' '):
+                # Context line (appears in both old and new)
+                context_line = line[1:]
+                old_code_lines.append(context_line)
+                new_code_lines.append(context_line)
+                changes.append(f"   CONTEXT (Line {line_number}): {context_line}")
+                line_number += 1
+        
+        # Join the code lines
+        old_code = '\n'.join(old_code_lines) if old_code_lines else "No old code found"
+        new_code = '\n'.join(new_code_lines) if new_code_lines else "No new code found"
+        changes_summary = '\n'.join(changes) if changes else "No meaningful changes found in diff"
+        
+        return old_code, new_code, changes_summary
     
     def get_service_info(self) -> Dict:
         """Get service configuration information"""
@@ -484,7 +573,10 @@ class PRReviewService:
         """Analyze changes in a specific file using YAML prompts"""
         file_path = file_info['filename']
         file_diff = self.extract_file_diff(full_diff, file_path)
-        code_changes = self.parse_diff_changes(file_diff)
+        
+        # CHANGED: Use the new detailed parsing method
+        old_code, new_code, code_changes = self.parse_diff_changes_detailed(file_diff)
+        
         language = self.detect_language(file_path)
         
         # Use YAML-based prompt template
@@ -497,16 +589,21 @@ class PRReviewService:
                 "language": language,
                 "additions": file_info.get('additions', 0),
                 "deletions": file_info.get('deletions', 0),
+                "old_code": old_code,        # ADDED
+                "new_code": new_code,        # ADDED
                 "diff": file_diff[:5000],
                 "changes_summary": code_changes
             })
             
             improvement_suggestions = await self.generate_code_improvements(file_path, file_diff, language)
+
             
             return {
                 "file": file_path,
                 "language": language,
                 "analysis": analysis.content,
+                "old_code": old_code,        # ADDED
+                "new_code": new_code,        # ADDED
                 "code_changes": code_changes,
                 "improvements": improvement_suggestions,
                 "changes": {
@@ -524,7 +621,9 @@ class PRReviewService:
                 "file": file_path,
                 "language": language,
                 "analysis": f"Basic analysis for {file_path}: {str(e)}",
-                "code_changes": code_changes,
+                "old_code": old_code if 'old_code' in locals() else "Error extracting old code",  # ADDED
+                "new_code": new_code if 'new_code' in locals() else "Error extracting new code",  # ADDED
+                "code_changes": code_changes if 'code_changes' in locals() else "Error parsing changes",
                 "improvements": fallback_improvements,
                 "changes": {
                     "additions": file_info.get('additions', 0),
@@ -559,16 +658,19 @@ class PRReviewService:
                         if ConfigService.get_logging_config()['debug_enabled']:
                             print(f"⚠️  Error analyzing {file_info.get('filename', 'unknown')}: {e}")
                         file_reviews.append({
-                            "file": file_info.get('filename', 'unknown'),
-                            "language": self.detect_language(file_info.get('filename', '')),
-                            "analysis": f"Could not analyze this file: {str(e)}",
-                            "code_changes": "Analysis failed",
-                            "improvements": "Analysis error occurred",
-                            "changes": {
-                                "additions": file_info.get('additions', 0),
-                                "deletions": file_info.get('deletions', 0)
-                            }
-                        })
+                                "file": file_info.get('filename', 'unknown'),
+                                "language": self.detect_language(file_info.get('filename', '')),
+                                "analysis": f"Could not analyze this file: {str(e)}",
+                                "old_code": "Error extracting old code",        
+                                "new_code": "Error extracting new code",        # ADD THIS
+                                "code_changes": "Analysis failed",
+                                "improvements": "Analysis error occurred",
+                                "changes": {
+                                    "additions": file_info.get('additions', 0),
+                                    "deletions": file_info.get('deletions', 0)
+                                }
+                            })
+
             
             if ConfigService.get_logging_config()['debug_enabled']:
                 print("📊 Generating overall review...")
