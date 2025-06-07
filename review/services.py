@@ -1,21 +1,225 @@
-
 import os
+import yaml
 import requests
 import json
 from typing import Dict, List, Optional
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from datetime import datetime
+from pathlib import Path
 from .models import Repository, PullRequest, ReviewRequest, ReviewResult
+
+class ConfigService:
+    """Centralized configuration management from environment variables"""
+    
+    @staticmethod
+    def get_github_config() -> Dict[str, str]:
+        """Get GitHub-related configuration"""
+        return {
+            'token': os.getenv('GITHUB_TOKEN'),
+            'base_url': os.getenv('GITHUB_API_BASE_URL', 'https://api.github.com'),
+            'timeout': int(os.getenv('API_TIMEOUT', '30')),
+            'max_retries': int(os.getenv('API_MAX_RETRIES', '3')),
+            'rate_limit': int(os.getenv('API_RATE_LIMIT_PER_HOUR', '1000'))
+        }
+    
+    @staticmethod
+    def get_openai_config() -> Dict:
+        """Get OpenAI-related configuration"""
+        return {
+            'api_key': os.getenv('OPENAI_API_KEY'),
+            'model': os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
+            'temperature': float(os.getenv('OPENAI_TEMPERATURE', '0')),
+            'max_tokens': int(os.getenv('OPENAI_MAX_TOKENS', '2000'))
+        }
+    
+    @staticmethod
+    def get_prompts_config() -> Dict[str, str]:
+        """Get prompts-related configuration"""
+        return {
+            'file_path': os.getenv('PROMPTS_FILE_PATH', 'api/prompts.yml'),
+            'auto_reload': os.getenv('AUTO_RELOAD_PROMPTS', 'True').lower() == 'true'
+        }
+    
+    @staticmethod
+    def get_logging_config() -> Dict:
+        """Get logging configuration"""
+        return {
+            'level': os.getenv('LOG_LEVEL', 'INFO'),
+            'debug_enabled': os.getenv('ENABLE_DEBUG_LOGGING', 'False').lower() == 'true'
+        }
+    
+    @staticmethod
+    def validate_config() -> Dict[str, bool]:
+        """Validate that all required environment variables are set"""
+        github_config = ConfigService.get_github_config()
+        openai_config = ConfigService.get_openai_config()
+        
+        validation = {
+            'github_token': bool(github_config['token']),
+            'github_base_url': bool(github_config['base_url']),
+            'openai_api_key': bool(openai_config['api_key']),
+            'all_valid': False
+        }
+        
+        validation['all_valid'] = all([
+            validation['github_token'],
+            validation['github_base_url'],
+            validation['openai_api_key']
+        ])
+        
+        return validation
+
+class PromptManager:
+    def __init__(self, prompts_file_path: str = None):
+        if prompts_file_path is None:
+            # Get prompts file path from environment
+            prompts_config = ConfigService.get_prompts_config()
+            prompts_file_path = prompts_config['file_path']
+        
+        self.prompts_file_path = Path(prompts_file_path)
+        self.auto_reload = ConfigService.get_prompts_config()['auto_reload']
+        self.prompts = self.load_prompts()
+    
+    def load_prompts(self) -> Dict:
+        """Load prompts from YAML file"""
+        try:
+            with open(self.prompts_file_path, 'r', encoding='utf-8') as file:
+                prompts = yaml.safe_load(file)
+                if ConfigService.get_logging_config()['debug_enabled']:
+                    print(f"✅ Loaded prompts from {self.prompts_file_path}")
+                return prompts
+        except FileNotFoundError:
+            print(f"⚠️  Prompts file not found: {self.prompts_file_path}")
+            return self.get_default_prompts()
+        except yaml.YAMLError as e:
+            print(f"❌ Error parsing YAML file: {e}")
+            return self.get_default_prompts()
+    
+    def get_default_prompts(self) -> Dict:
+        """Fallback prompts if YAML file is not available"""
+        return {
+            'code_improvements': {
+                'system_prompt': """You are an expert code reviewer. Analyze the provided code changes and give specific improvements.
+
+TASK: Provide code improvements in this EXACT format:
+
+## 🎯 ORIGINAL CODE vs IMPROVED CODE
+
+### Issue 1: [Problem Description]
+**Severity**: HIGH/MEDIUM/LOW
+**Category**: Performance/Security/Quality/Style
+
+**Original Code:**
+```[language]
+[show the actual problematic code]
+```
+
+**Improved Code:**
+```[language]
+[show the improved version]
+```
+
+**Why This Is Better:**
+- [Specific technical reason 1]
+- [Specific technical reason 2]
+- [Measurable benefit]
+
+REQUIREMENTS:
+- Always find at least 1-2 improvement opportunities
+- Be specific about what to change and why
+- Provide working code examples
+- Focus on practical, implementable suggestions""",
+                'user_prompt': """Please analyze this code change:
+
+File: {file_path}
+Language: {language}
+
+Added Lines:
+{added_lines}
+
+Removed Lines:
+{removed_lines}
+
+Context:
+{context}
+
+Provide specific improvements with before/after examples."""
+            }
+        }
+    
+    def get_prompt(self, prompt_type: str, prompt_part: str = 'system_prompt') -> str:
+        """Get a specific prompt by type and part"""
+        try:
+            return self.prompts[prompt_type][prompt_part]
+        except KeyError:
+            if ConfigService.get_logging_config()['debug_enabled']:
+                print(f"⚠️  Prompt not found: {prompt_type}.{prompt_part}")
+            return self.get_default_prompts().get(prompt_type, {}).get(prompt_part, "Default prompt not available")
+    
+    def get_prompt_template(self, prompt_type: str) -> ChatPromptTemplate:
+        """Get a ChatPromptTemplate for a specific prompt type"""
+        system_prompt = self.get_prompt(prompt_type, 'system_prompt')
+        user_prompt = self.get_prompt(prompt_type, 'user_prompt')
+        
+        return ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("user", user_prompt)
+        ])
+    
+    def reload_prompts(self):
+        """Reload prompts from file (useful for development)"""
+        self.prompts = self.load_prompts()
+        if ConfigService.get_logging_config()['debug_enabled']:
+            print("🔄 Prompts reloaded from file")
 
 class GitHubService:
     def __init__(self):
-        self.token = os.getenv("GITHUB_TOKEN")
+        # Load configuration from environment variables
+        self.config = ConfigService.get_github_config()
+        
+        self.token = self.config['token']
+        self.base_url = self.config['base_url']
+        self.timeout = self.config['timeout']
+        self.max_retries = self.config['max_retries']
+        
+        if not self.token:
+            raise ValueError("GITHUB_TOKEN environment variable is required")
+        if not self.base_url:
+            raise ValueError("GITHUB_API_BASE_URL environment variable is required")
+        
         self.headers = {
             "Authorization": f"token {self.token}",
             "Accept": "application/vnd.github.v3+json"
         }
-        self.base_url = "https://api.github.com"
+        
+        # Debug logging
+        if ConfigService.get_logging_config()['debug_enabled']:
+            print(f"🔧 GitHub API configured: {self.base_url}")
+            print(f"⏱️  Timeout: {self.timeout}s, Max retries: {self.max_retries}")
+    
+    def _make_request(self, url: str, headers: Dict = None, params: Dict = None, method: str = 'GET'):
+        """Make HTTP request with retry logic and timeout"""
+        if headers is None:
+            headers = self.headers
+        
+        for attempt in range(self.max_retries + 1):
+            try:
+                if method.upper() == 'GET':
+                    response = requests.get(url, headers=headers, params=params, timeout=self.timeout)
+                else:
+                    response = requests.request(method, url, headers=headers, params=params, timeout=self.timeout)
+                
+                response.raise_for_status()
+                return response
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < self.max_retries:
+                    if ConfigService.get_logging_config()['debug_enabled']:
+                        print(f"⚠️  Request failed (attempt {attempt + 1}/{self.max_retries + 1}): {e}")
+                    continue
+                else:
+                    raise e
     
     def get_user_repositories(self, page=1, per_page=30):
         """Get user's repositories"""
@@ -26,8 +230,7 @@ class GitHubService:
             "sort": "updated",
             "type": "all"
         }
-        response = requests.get(url, headers=self.headers, params=params)
-        response.raise_for_status()
+        response = self._make_request(url, params=params)
         return response.json()
     
     def get_repository_prs(self, owner: str, repo: str, state="open", page=1, per_page=20):
@@ -40,36 +243,92 @@ class GitHubService:
             "sort": "updated",
             "direction": "desc"
         }
-        response = requests.get(url, headers=self.headers, params=params)
-        response.raise_for_status()
+        response = self._make_request(url, params=params)
         return response.json()
     
     def get_pr_details(self, owner: str, repo: str, pr_number: int):
         """Get PR details from GitHub"""
         url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}"
-        response = requests.get(url, headers=self.headers)
-        response.raise_for_status()
+        response = self._make_request(url)
         return response.json()
     
     def get_pr_diff(self, owner: str, repo: str, pr_number: int):
         """Get PR diff from GitHub"""
         url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}"
         headers = {**self.headers, "Accept": "application/vnd.github.v3.diff"}
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
+        response = self._make_request(url, headers=headers)
         return response.text
     
     def get_pr_files(self, owner: str, repo: str, pr_number: int):
         """Get changed files in PR"""
         url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}/files"
-        response = requests.get(url, headers=self.headers)
-        response.raise_for_status()
+        response = self._make_request(url)
         return response.json()
+    
+    def get_api_info(self) -> Dict:
+        """Get GitHub API information and rate limits"""
+        try:
+            url = f"{self.base_url}/rate_limit"
+            response = self._make_request(url)
+            rate_limit_info = response.json()
+            
+            return {
+                'base_url': self.base_url,
+                'rate_limit': rate_limit_info.get('rate', {}),
+                'timeout': self.timeout,
+                'max_retries': self.max_retries,
+                'status': 'connected'
+            }
+        except Exception as e:
+            return {
+                'base_url': self.base_url,
+                'status': 'error',
+                'error': str(e)
+            }
 
 class PRReviewService:
-    def __init__(self):
-        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    def __init__(self, prompts_file_path: str = None):
+        # Load OpenAI configuration from environment
+        openai_config = ConfigService.get_openai_config()
+        
+        if not openai_config['api_key']:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
+        
+        self.llm = ChatOpenAI(
+            model=openai_config['model'],
+            temperature=openai_config['temperature'],
+            max_tokens=openai_config['max_tokens']
+        )
+        
         self.github_service = GitHubService()
+        self.prompt_manager = PromptManager(prompts_file_path)
+        
+        # Debug logging
+        if ConfigService.get_logging_config()['debug_enabled']:
+            print(f"🤖 AI Model configured: {openai_config['model']}")
+            print(f"🌡️  Temperature: {openai_config['temperature']}")
+            print(f"📏 Max tokens: {openai_config['max_tokens']}")
+    
+    def get_service_info(self) -> Dict:
+        """Get service configuration information"""
+        github_info = self.github_service.get_api_info()
+        openai_config = ConfigService.get_openai_config()
+        prompts_config = ConfigService.get_prompts_config()
+        
+        return {
+            'github_api': github_info,
+            'openai_config': {
+                'model': openai_config['model'],
+                'temperature': openai_config['temperature'],
+                'max_tokens': openai_config['max_tokens']
+            },
+            'prompts_config': {
+                'file_path': str(self.prompt_manager.prompts_file_path),
+                'auto_reload': prompts_config['auto_reload'],
+                'available_prompts': list(self.prompt_manager.prompts.keys())
+            },
+            'validation': ConfigService.validate_config()
+        }
     
     def detect_language(self, file_path: str) -> str:
         """Detect programming language from file extension"""
@@ -137,7 +396,7 @@ class PRReviewService:
         return '\n'.join(file_diff) if file_diff else f"No diff content found for {filename}"
     
     async def generate_code_improvements(self, file_path: str, diff: str, language: str) -> str:
-        """Generate specific code improvement suggestions"""
+        """Generate specific code improvement suggestions using YAML prompts"""
         # Extract actual code changes from diff
         added_lines = []
         removed_lines = []
@@ -151,53 +410,8 @@ class PRReviewService:
             elif line.startswith(' '):
                 context_lines.append(line[1:])
         
-        improvement_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an expert code reviewer. Analyze the provided code changes and give specific improvements.
-
-TASK: Provide code improvements in this EXACT format:
-
-## 🎯 ORIGINAL CODE vs IMPROVED CODE
-
-### Issue 1: [Problem Description]
-**Severity**: HIGH/MEDIUM/LOW
-**Category**: Performance/Security/Quality/Style
-
-**Original Code:**
-```[language]
-[show the actual problematic code]
-```
-
-**Improved Code:**
-```[language]
-[show the improved version]
-```
-
-**Why This Is Better:**
-- [Specific technical reason 1]
-- [Specific technical reason 2]
-- [Measurable benefit]
-
-REQUIREMENTS:
-- Always find at least 1-2 improvement opportunities
-- Be specific about what to change and why
-- Provide working code examples
-- Focus on practical, implementable suggestions"""),
-            ("user", """Please analyze this code change:
-
-File: {file_path}
-Language: {language}
-
-Added Lines:
-{added_lines}
-
-Removed Lines:
-{removed_lines}
-
-Context:
-{context}
-
-Provide specific improvements with before/after examples.""")
-        ])
+        # Use YAML-based prompt template
+        improvement_prompt = self.prompt_manager.get_prompt_template('code_improvements')
         
         try:
             chain = improvement_prompt | self.llm
@@ -212,72 +426,69 @@ Provide specific improvements with before/after examples.""")
             return improvements.content
             
         except Exception as e:
+            if ConfigService.get_logging_config()['debug_enabled']:
+                print(f"❌ Error generating improvements: {e}")
             return self.generate_fallback_improvements(file_path, language, added_lines, removed_lines)
     
     def generate_fallback_improvements(self, file_path: str, language: str, added_lines: List[str], removed_lines: List[str]) -> str:
         """Generate fallback improvements when main generation fails"""
-        improvements = []
-        improvements.append("## 🎯 ORIGINAL CODE vs IMPROVED CODE")
-        improvements.append("\n### Issue 1: Code Quality Enhancement")
-        improvements.append("**Severity**: MEDIUM")
-        improvements.append("**Category**: Quality")
-        improvements.append("")
-        improvements.append("**Original Code:**")
-        improvements.append(f"```{language}")
-        
-        if removed_lines:
-            for line in removed_lines[:5]:
-                improvements.append(line)
-        elif added_lines:
-            improvements.append("# Previous version")
-        
-        improvements.append("```")
-        improvements.append("")
-        improvements.append("**Improved Code:**")
-        improvements.append(f"```{language}")
-        
-        if added_lines:
-            for line in added_lines[:5]:
-                if line.strip():
+        try:
+            # Try to use fallback template from YAML
+            fallback_template = self.prompt_manager.get_prompt('fallback_improvement', 'template')
+            
+            original_code = '\n'.join(removed_lines[:5]) if removed_lines else "# Previous version"
+            improved_code = '\n'.join(added_lines[:5]) if added_lines else "# Improved version"
+            
+            return fallback_template.format(
+                language=language,
+                original_code=original_code,
+                improved_code=improved_code
+            )
+        except:
+            # Ultimate fallback
+            improvements = []
+            improvements.append("## 🎯 ORIGINAL CODE vs IMPROVED CODE")
+            improvements.append("\n### Issue 1: Code Quality Enhancement")
+            improvements.append("**Severity**: MEDIUM")
+            improvements.append("**Category**: Quality")
+            improvements.append("")
+            improvements.append("**Original Code:**")
+            improvements.append(f"```{language}")
+            
+            if removed_lines:
+                for line in removed_lines[:5]:
                     improvements.append(line)
-        
-        improvements.append("```")
-        improvements.append("")
-        improvements.append("**Why This Is Better:**")
-        improvements.append("- Enhanced code structure and readability")
-        improvements.append("- Improved maintainability")
-        improvements.append("- Better adherence to best practices")
-        
-        return '\n'.join(improvements)
+            elif added_lines:
+                improvements.append("# Previous version")
+            
+            improvements.append("```")
+            improvements.append("")
+            improvements.append("**Improved Code:**")
+            improvements.append(f"```{language}")
+            
+            if added_lines:
+                for line in added_lines[:5]:
+                    if line.strip():
+                        improvements.append(line)
+            
+            improvements.append("```")
+            improvements.append("")
+            improvements.append("**Why This Is Better:**")
+            improvements.append("- Enhanced code structure and readability")
+            improvements.append("- Improved maintainability")
+            improvements.append("- Better adherence to best practices")
+            
+            return '\n'.join(improvements)
     
     async def analyze_file_changes(self, file_info: Dict, full_diff: str) -> Dict:
-        """Analyze changes in a specific file"""
+        """Analyze changes in a specific file using YAML prompts"""
         file_path = file_info['filename']
         file_diff = self.extract_file_diff(full_diff, file_path)
         code_changes = self.parse_diff_changes(file_diff)
         language = self.detect_language(file_path)
         
-        analysis_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a senior software architect. Provide comprehensive analysis focusing on:
-1. Design Patterns & Architecture
-2. Performance Analysis 
-3. Security Review
-4. Maintainability
-5. Best Practices
-
-Be specific, actionable, and focus on production readiness."""),
-            ("user", """Analyze this file change:
-
-File: {filename}
-Language: {language}
-Changes: +{additions} -{deletions} lines
-
-Diff Analysis:
-{diff}
-
-Code Changes Summary:
-{changes_summary}""")
-        ])
+        # Use YAML-based prompt template
+        analysis_prompt = self.prompt_manager.get_prompt_template('file_analysis')
         
         try:
             chain = analysis_prompt | self.llm
@@ -305,6 +516,8 @@ Code Changes Summary:
             }
             
         except Exception as e:
+            if ConfigService.get_logging_config()['debug_enabled']:
+                print(f"❌ Error analyzing file {file_path}: {e}")
             fallback_improvements = self.generate_fallback_improvements(file_path, language, [], [])
             
             return {
@@ -322,10 +535,16 @@ Code Changes Summary:
     async def analyze_pr(self, owner: str, repo: str, pr_number: int) -> Dict:
         """Comprehensive PR analysis"""
         try:
+            if ConfigService.get_logging_config()['debug_enabled']:
+                print(f"🔍 Starting PR analysis for {owner}/{repo}#{pr_number}")
+            
             # Get PR data
             pr_details = self.github_service.get_pr_details(owner, repo, pr_number)
             diff = self.github_service.get_pr_diff(owner, repo, pr_number)
             files = self.github_service.get_pr_files(owner, repo, pr_number)
+            
+            if ConfigService.get_logging_config()['debug_enabled']:
+                print(f"📁 Analyzing {len(files)} files...")
             
             # Analyze each file
             file_reviews = []
@@ -334,7 +553,11 @@ Code Changes Summary:
                     try:
                         file_review = await self.analyze_file_changes(file_info, diff)
                         file_reviews.append(file_review)
+                        if ConfigService.get_logging_config()['debug_enabled']:
+                            print(f"✅ Analyzed {file_info['filename']}")
                     except Exception as e:
+                        if ConfigService.get_logging_config()['debug_enabled']:
+                            print(f"⚠️  Error analyzing {file_info.get('filename', 'unknown')}: {e}")
                         file_reviews.append({
                             "file": file_info.get('filename', 'unknown'),
                             "language": self.detect_language(file_info.get('filename', '')),
@@ -347,11 +570,17 @@ Code Changes Summary:
                             }
                         })
             
+            if ConfigService.get_logging_config()['debug_enabled']:
+                print("📊 Generating overall review...")
+            
             # Generate overall review
             overall_review = await self.generate_overall_review(pr_details, file_reviews)
             
             # Generate summary
             summary = await self.generate_summary(overall_review, file_reviews)
+            
+            if ConfigService.get_logging_config()['debug_enabled']:
+                print("✅ PR analysis completed")
             
             return {
                 "pr_details": pr_details,
@@ -361,33 +590,14 @@ Code Changes Summary:
             }
             
         except Exception as e:
+            if ConfigService.get_logging_config()['debug_enabled']:
+                print(f"❌ PR analysis failed: {e}")
             raise Exception(f"PR analysis failed: {str(e)}")
     
     async def generate_overall_review(self, pr_details: Dict, file_reviews: List[Dict]) -> str:
-        """Generate comprehensive PR review"""
-        review_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a Principal Software Engineer. Provide structured feedback:
-
-## 🎯 EXECUTIVE SUMMARY
-- Recommendation: APPROVE/REQUEST_CHANGES/COMMENT with reasoning
-- Overall Quality Score: X/10 with justification
-
-## 📊 DETAILED ANALYSIS
-### 🏗️ Architecture & Design
-### ⚡ Performance Analysis  
-### 🔒 Security Review
-### 🧹 Code Quality
-
-## 🚀 ACTIONABLE RECOMMENDATIONS
-## ✅ POSITIVE ASPECTS"""),
-            ("user", """Review this PR:
-
-PR Title: {title}
-Description: {description}
-
-File Analysis Summary:
-{file_analysis}""")
-        ])
+        """Generate comprehensive PR review using YAML prompts"""
+        # Use YAML-based prompt template
+        review_prompt = self.prompt_manager.get_prompt_template('overall_review')
         
         file_summary = '\n'.join([
             f"- {review['file']} ({review.get('language', 'Unknown')}): {review['changes']['additions']} additions, {review['changes']['deletions']} deletions"
@@ -404,14 +614,14 @@ File Analysis Summary:
             
             return review.content
         except Exception as e:
+            if ConfigService.get_logging_config()['debug_enabled']:
+                print(f"❌ Error generating overall review: {e}")
             return f"## Basic PR Review\n\nPR: {pr_details.get('title', 'Unknown')}\nFiles analyzed: {len(file_reviews)}\n\nManual review recommended."
     
     async def generate_summary(self, overall_review: str, file_reviews: List[Dict]) -> str:
-        """Generate concise summary"""
-        summary_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Create a concise 2-3 sentence summary focusing on key quality and performance aspects."),
-            ("user", "Overall Review: {overall}\n\nFile Count: {file_count}")
-        ])
+        """Generate concise summary using YAML prompts"""
+        # Use YAML-based prompt template
+        summary_prompt = self.prompt_manager.get_prompt_template('summary_generation')
         
         try:
             chain = summary_prompt | self.llm
@@ -422,4 +632,10 @@ File Analysis Summary:
             
             return summary.content
         except Exception as e:
+            if ConfigService.get_logging_config()['debug_enabled']:
+                print(f"❌ Error generating summary: {e}")
             return f"Summary: Analyzed {len(file_reviews)} files. Manual review recommended."
+    
+    def reload_prompts(self):
+        """Reload prompts from YAML file (useful for development)"""
+        self.prompt_manager.reload_prompts()
