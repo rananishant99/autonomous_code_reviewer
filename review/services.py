@@ -287,10 +287,10 @@ class GitHubService:
             }
 
 class PRReviewService:
-    def __init__(self, prompts_file_path: str = None):
+    def __init__(self, prompts_file_path: str = None, user=None):
         # Load OpenAI configuration from environment
         openai_config = ConfigService.get_openai_config()
-        
+        self.user = user
         if not openai_config['api_key']:
             raise ValueError("OPENAI_API_KEY environment variable is required")
         
@@ -300,7 +300,7 @@ class PRReviewService:
             max_tokens=openai_config['max_tokens']
         )
         
-        self.github_service = GitHubService()
+        self.github_service = GitHubService(self.user)
         self.prompt_manager = PromptManager(prompts_file_path)
         
         # Debug logging

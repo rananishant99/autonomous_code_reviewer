@@ -247,7 +247,7 @@ class PRReviewAPIView(APIView):
                     })
                 else:
                     # Synchronous review
-                    review_service = PRReviewService()
+                    review_service = PRReviewService(user=request.user)
                     
                     # Update status to processing
                     review_request.status = 'processing'
