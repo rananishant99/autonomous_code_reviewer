@@ -1,7 +1,3 @@
-# ========================================
-# FIXED api/views.py - Better Error Handling
-# ========================================
-
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -20,16 +16,20 @@ from .serializers import (
     CodeImprovementSerializer
 )
 from .services import GitHubService, PRReviewService
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework.permissions import IsAuthenticated
 
 class RepositoryListAPIView(APIView):
     """
     GET /api/repositories/
     List user's repositories with pagination
     """
+    # authentication_classes = [JWTAuthentication]  # or your auth class
+    # permission_classes = [IsAuthenticated]
     
     def get(self, request):
         try:
-            github_service = GitHubService()
+            github_service = GitHubService(request.user)
             page = int(request.query_params.get('page', 1))
             per_page = int(request.query_params.get('per_page', 20))
             
@@ -111,7 +111,7 @@ class PullRequestListAPIView(APIView):
     
     def get(self, request, owner, repo):
         try:
-            github_service = GitHubService()
+            github_service = GitHubService(request.user)
             page = int(request.query_params.get('page', 1))
             per_page = int(request.query_params.get('per_page', 20))
             state = request.query_params.get('state', 'open')
@@ -186,7 +186,7 @@ class PullRequestDetailAPIView(APIView):
     
     def get(self, request, owner, repo, pr_number):
         try:
-            github_service = GitHubService()
+            github_service = GitHubService(request.user)
             pr_data = github_service.get_pr_details(owner, repo, pr_number)
             
             return Response({
@@ -247,7 +247,9 @@ class PRReviewAPIView(APIView):
                     })
                 else:
                     # Synchronous review
-                    review_service = PRReviewService()
+                    review_service = PRReviewService(user=request.user)
+
+                    
                     
                     # Update status to processing
                     review_request.status = 'processing'
@@ -258,14 +260,37 @@ class PRReviewAPIView(APIView):
                     
                     try:
                         result = asyncio.run(run_review())
+
+                        # Optional: Log the structure to verify old_code/new_code are included
+                        if result.get('file_reviews'):
+                            print(f"\n🔍 DEBUGGING: Found {len(result['file_reviews'])} file reviews")
+                            
+                            for i, file_review in enumerate(result['file_reviews']):
+                                print(f"\n📁 File {i+1}: {file_review.get('file', 'Unknown')}")
+                                print(f"   Keys in file_review: {list(file_review.keys())}")
+                                
+                                if 'old_code' in file_review and 'new_code' in file_review:
+                                    print(f"   ✅ Has separate old/new code")
+                                    print(f"   📄 Old code length: {len(file_review['old_code'])} chars")
+                                    print(f"   📄 New code length: {len(file_review['new_code'])} chars")
+                                    
+                                    # Show a snippet of the old/new code
+                                    old_preview = file_review['old_code'][:100] + "..." if len(file_review['old_code']) > 100 else file_review['old_code']
+                                    new_preview = file_review['new_code'][:100] + "..." if len(file_review['new_code']) > 100 else file_review['new_code']
+                                    
+                                    print(f"   📝 Old code preview: {repr(old_preview)}")
+                                    print(f"   📝 New code preview: {repr(new_preview)}")
+                                else:
+                                    print(f"   ⚠️  Missing old/new code separation")
+                                    print(f"   🔍 Available keys: {list(file_review.keys())}")
                         
-                        # Save results
+                        # Save results - the database will automatically store the new fields
                         review_result, created = ReviewResult.objects.update_or_create(
                             review_request=review_request,
                             defaults={
                                 'pr_details': result['pr_details'],
                                 'overall_review': result['overall_review'],
-                                'file_reviews': result['file_reviews'],
+                                'file_reviews': result['file_reviews'],  # This now includes old_code/new_code
                                 'summary': result['summary'],
                             }
                         )
@@ -280,14 +305,21 @@ class PRReviewAPIView(APIView):
                             'data': {
                                 'pr_details': result['pr_details'],
                                 'overall_review': result['overall_review'],
-                                'file_reviews': result['file_reviews'],
+                                'file_reviews': result['file_reviews'],  # Now includes old_code/new_code for each file
                                 'summary': result['summary'],
                             }
                         })
                         
                     except Exception as review_error:
                         review_request.status = 'failed'
+                        review_request.error_message = str(review_error)  # Store error details
                         review_request.save()
+                        
+                        # Log the full error for debugging
+                        print(f"❌ PR Review failed: {review_error}")
+                        import traceback
+                        print(traceback.format_exc())
+                        
                         raise review_error
                     
             except Exception as e:

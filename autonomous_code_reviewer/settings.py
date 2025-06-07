@@ -31,9 +31,25 @@ DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
 
-CORS_ALLOWED_ORIGINS = ["http://localhost:3000"]
+CORS_ALLOWED_ORIGINS = ["http://localhost:3000", "https://c4c2-49-249-18-30.ngrok-free.app"]
+# CORS_ALLOW_ALL_ORIGINS = True
 
+
+from corsheaders.defaults import default_headers
+
+CORS_ALLOW_ALL_ORIGINS = True  # For dev only
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'authorization',  # ✅ Required for JWT
+]
+
+CORS_ALLOW_CREDENTIALS = False  # ✅ Not needed for JWT
+
+
+# CORS_ALLOW_CREDENTIALS = True
 # Application definition
+## Encryption Key ##
+ENCRYPTION_KEY = "5WGD9hT76WrUrrsghVVjWigvwE4nVOdvZaeKmQkc0TQ="
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -42,10 +58,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'rest_framework',
     'corsheaders',
+    'rest_framework',
     'authentication',
     'review',
+    'chatbot'
 ]
 
 MIDDLEWARE = [
@@ -94,6 +111,9 @@ DATABASES = {
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
     ),
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
@@ -148,6 +168,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=5),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=300),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
 }

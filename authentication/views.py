@@ -3,16 +3,16 @@ from rest_framework.generics import GenericAPIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import AllowAny
 from django.contrib.auth import authenticate
-
+from .utils import encrypt_token, decrypt_token
 from autonomous_code_reviewer.utils import (
     create_api_response,
     create_serializer_response,
 )
 from autonomous_code_reviewer.constants import ActionMessages
 
-from .serializers import UserSignupSerializer, UserLoginSerializer, CustomRefreshTokenSerializer
+from .serializers import UserSignupSerializer, UserLoginSerializer, CustomRefreshTokenSerializer, GitTokenSerializer
 from .constants import Authentication
-
+from .models import GitToken
 
 class UserSignupView(GenericAPIView):
     serializer_class = UserSignupSerializer
@@ -133,3 +133,30 @@ class CustomRefreshTokenView(GenericAPIView):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 message="Internal server error"
             )
+
+
+class SaveGitHubTokenView(GenericAPIView):
+    """
+    API to receive a GitHub token and save it for the authenticated user.
+    """
+    serializer_class = GitTokenSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            token_value = serializer.validated_data['token']
+            token_obj, created = GitToken.objects.update_or_create(
+                user=request.user,
+                defaults={'token': encrypt_token(token_value)}
+            )
+            return create_api_response(
+                status_code=status.HTTP_200_OK,
+                message=(
+                    Authentication.GITHUB['UPDATED'] if not created else Authentication.GITHUB['CREATED']
+                )
+            )
+        # Return validation errors
+        return create_api_response(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            message=create_serializer_response(serializer.errors)
+        )
