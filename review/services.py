@@ -7,10 +7,10 @@ from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from datetime import datetime
 from .models import Repository, PullRequest, ReviewRequest, ReviewResult
-
+from authentication.utils import decrypt_token
 class GitHubService:
     def __init__(self, user):
-        self.token = user.github_tokens.latest('created_at').token
+        self.token = decrypt_token(user.github_tokens.latest('created_at').token)
         self.headers = {
             "Authorization": f"token {self.token}",
             "Accept": "application/vnd.github.v3+json"

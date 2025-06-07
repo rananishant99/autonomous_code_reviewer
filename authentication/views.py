@@ -3,7 +3,7 @@ from rest_framework.generics import GenericAPIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import AllowAny
 from django.contrib.auth import authenticate
-
+from .utils import encrypt_token, decrypt_token
 from autonomous_code_reviewer.utils import (
     create_api_response,
     create_serializer_response,
@@ -147,7 +147,7 @@ class SaveGitHubTokenView(GenericAPIView):
             token_value = serializer.validated_data['token']
             token_obj, created = GitToken.objects.update_or_create(
                 user=request.user,
-                defaults={'token': token_value}
+                defaults={'token': encrypt_token(token_value)}
             )
             return create_api_response(
                 status_code=status.HTTP_200_OK,
